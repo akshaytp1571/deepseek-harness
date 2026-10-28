@@ -16,6 +16,11 @@ export const zh = {
   'presented.preview': '在侧边栏预览',
   'presented.previewButton': '在侧边栏打开 {name}',
   'presented.previewCard': '在侧边栏预览 {name}',
+  'presented.download': '下载文件',
+  'presented.downloadButton': '下载 {name}',
+  'presented.downloading': '正在下载…',
+  'presented.downloaded': '已开始下载',
+  'presented.downloadError': '下载失败，点击重试',
   'presented.all': '全部 {count} 个文件',
   'presented.expandAria': '展开全部 {count} 个交付文件',
   'presented.collapse': '收起',
@@ -77,6 +82,11 @@ export const en: Record<DeliverablesKey, string> = {
   'presented.preview': 'Preview in sidebar',
   'presented.previewButton': 'Open {name} in sidebar',
   'presented.previewCard': 'Preview {name} in sidebar',
+  'presented.download': 'Download file',
+  'presented.downloadButton': 'Download {name}',
+  'presented.downloading': 'Downloading…',
+  'presented.downloaded': 'Download started',
+  'presented.downloadError': 'Download failed. Click to retry.',
   'presented.all': 'All {count} files',
   'presented.expandAria': 'Show all {count} delivered files',
   'presented.collapse': 'Collapse',
@@ -130,6 +140,11 @@ export type DeliverablesKey = keyof typeof zh
 
 /** Japanese copy, checked against the English keys. */
 export const ja = {
+  'presented.download': 'ダウンロード',
+  'presented.downloadButton': 'ダウンロード {name}',
+  'presented.downloading': 'ダウンロード中…',
+  'presented.downloaded': 'ダウンロードを開始しました',
+  'presented.downloadError': 'ダウンロードに失敗しました。クリックして再試行',
   'presented.nativeUnavailable': 'このファイルには利用可能なHostパスがありません。サイドバーでプレビューしてください。',
   'presented.revealError': 'ファイルマネージャーで表示できませんでした。再試行してください。',
   'presented.directoryError': '含まれるフォルダーを開けませんでした。再試行してください。',
@@ -191,6 +206,11 @@ export const ja = {
 
 /** Spanish dictionary, checked against the English keys. */
 export const es = {
+  'presented.download': 'Descargar archivo',
+  'presented.downloadButton': 'Descargar {name}',
+  'presented.downloading': 'Descargando…',
+  'presented.downloaded': 'Descarga iniciada',
+  'presented.downloadError': 'No se pudo descargar. Clic para reintentar',
   'presented.nativeUnavailable': 'Este archivo no tiene una ruta de host disponible. Vista previa en la barra lateral.',
   'presented.revealError': 'No se pudo mostrar en el administrador de archivos. Intentar otra vez.',
   'presented.directoryError': 'No se pudo abrir la carpeta que lo contiene. Intentar otra vez.',
@@ -252,6 +272,11 @@ export const es = {
 
 /** French dictionary, checked against the English keys. */
 export const fr = {
+  'presented.download': 'Télécharger le fichier',
+  'presented.downloadButton': 'Télécharger {name}',
+  'presented.downloading': 'Téléchargement…',
+  'presented.downloaded': 'Téléchargement démarré',
+  'presented.downloadError': 'Échec du téléchargement. Cliquer pour réessayer',
   'presented.nativeUnavailable': "Ce fichier n'a pas de chemin d'hôte disponible. Prévisualisez-le dans la barre latérale.",
   'presented.revealError': "Impossible d'afficher dans le gestionnaire de fichiers. Essayer à nouveau.",
   'presented.directoryError': "Impossible d'ouvrir le dossier contenant. Essayer à nouveau.",
@@ -313,6 +338,11 @@ export const fr = {
 
 /** German dictionary, checked against the English keys. */
 export const de = {
+  'presented.download': 'Datei herunterladen',
+  'presented.downloadButton': '{name} herunterladen',
+  'presented.downloading': 'Wird heruntergeladen…',
+  'presented.downloaded': 'Download gestartet',
+  'presented.downloadError': 'Download fehlgeschlagen. Zum Wiederholen klicken',
   'presented.nativeUnavailable': 'Für diese Datei ist kein Hostpfad verfügbar. Sehen Sie sich die Vorschau in der Seitenleiste an.',
   'presented.revealError': 'Konnte im Dateimanager nicht angezeigt werden. Versuchen Sie es erneut.',
   'presented.directoryError': 'Der enthaltende Ordner konnte nicht geöffnet werden. Versuchen Sie es erneut.',
@@ -374,6 +404,11 @@ export const de = {
 
 /** Russian dictionary, checked against the English keys. */
 export const ru = {
+  'presented.download': 'Скачать файл',
+  'presented.downloadButton': 'Скачать {name}',
+  'presented.downloading': 'Загрузка…',
+  'presented.downloaded': 'Загрузка начата',
+  'presented.downloadError': 'Не удалось скачать. Нажмите, чтобы повторить',
   'presented.nativeUnavailable': 'У этого файла нет доступного пути к хосту. Предварительный просмотр на боковой панели.',
   'presented.revealError': 'Не удалось отобразить в файловом менеджере. Попробуйте еще раз.',
   'presented.directoryError': 'Не удалось открыть содержащую папку. Попробуйте еще раз.',
@@ -435,6 +470,11 @@ export const ru = {
 
 /** Portuguese dictionary, checked against the English keys. */
 export const pt = {
+  'presented.download': 'Baixar arquivo',
+  'presented.downloadButton': 'Baixar {name}',
+  'presented.downloading': 'Baixando…',
+  'presented.downloaded': 'Download iniciado',
+  'presented.downloadError': 'Falha no download. Clique para tentar novamente',
   'presented.nativeUnavailable': 'Este arquivo não possui caminho de host disponível. Visualize-o na barra lateral.',
   'presented.revealError': 'Não foi possível mostrar no gerenciador de arquivos. Tente novamente.',
   'presented.directoryError': 'Não foi possível abrir a pasta que contém. Tente novamente.',

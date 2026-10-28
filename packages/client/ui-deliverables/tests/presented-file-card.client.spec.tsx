@@ -12,7 +12,9 @@ const props = () => ({
   file: { path: 'out/report.pdf', description: 'Final report', seq: 4, index: 1 },
   host: { name: 'remote-desktop', available: true, fileManager: 'finder' as const },
   phase: undefined,
+  downloadPhase: undefined,
   onPreview: vi.fn(),
+  onDownload: vi.fn(),
   actions: <button type="button">Native file action</button>,
   t: makeTranslate(en),
 })
@@ -68,4 +70,21 @@ it('renders the supplied action independently from the card preview', () => {
   expect(p.onPreview).not.toHaveBeenCalled()
   fireEvent.click(view.getByRole('button', { name: 'Preview out/report.pdf in sidebar' }))
   expect(p.onPreview).toHaveBeenCalledOnce()
+})
+
+it('renders the download action with per-phase copy and disables it while downloading', () => {
+  const p = props()
+  const view = render(<PresentedFileCard {...p} />)
+  const idle = view.getByRole('button', { name: en['presented.downloadButton'].replace('{name}', 'report.pdf') })
+  expect(idle).toHaveProperty('disabled', false)
+  idle.click()
+  expect(p.onDownload).toHaveBeenCalledOnce()
+
+  view.rerender(<PresentedFileCard {...p} downloadPhase="downloading" />)
+  const busy = view.getByRole('button', { name: en['presented.downloadButton'].replace('{name}', 'report.pdf') })
+  expect(busy).toHaveProperty('disabled', true)
+  expect(view.getByTitle(en['presented.downloading'])).toBeTruthy()
+
+  view.rerender(<PresentedFileCard {...p} downloadPhase="error" />)
+  expect(view.getByTitle(en['presented.downloadError'])).toBeTruthy()
 })

@@ -1,11 +1,12 @@
 /** File identity, Sidebar preview, and contributed native actions for one delivery. */
 import type { ReactNode } from 'react'
 import { resolveWorkspacePath } from '@deepseek-ai/dsh-util-workspace-path'
-import { FileTypeIcon, fileExtension } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, FileTypeIcon, IconDownloadOutlineRegular, fileExtension } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { PresentedHost } from '../presented.ts'
 import type { PresentedOpenPhase } from './present-open.ts'
 import { basename, type PresentedPath } from './turn-deliverables.ts'
+import type { PresentedDownloadPhase } from './download-file.ts'
 import type { NS } from './locales.ts'
 import css from './Deliverables.module.css'
 
@@ -19,12 +20,14 @@ function cardDescription(description: string | undefined, fallback: string): str
  * @param props - durable file metadata, Sidebar preview, Host capabilities, gesture status, and localized copy.
  * @returns the file card and its anchored action menu.
  */
-export function PresentedFileCard({ file, cwd, phase, host, onPreview, actions, t }: {
+export function PresentedFileCard({ file, cwd, phase, downloadPhase, host, onPreview, onDownload, actions, t }: {
   file: PresentedPath
   cwd: string | undefined
   phase: PresentedOpenPhase | undefined
+  downloadPhase: PresentedDownloadPhase | undefined
   host: PresentedHost | null
   onPreview: () => void
+  onDownload: () => void
   actions: ReactNode
 } & PropsLocale<typeof NS>) {
   const reveal = host?.fileManager ?? 'directory'
@@ -34,6 +37,10 @@ export function PresentedFileCard({ file, cwd, phase, host, onPreview, actions, 
     ? cardDescription(file.description, metadata)
     : t(reveal === 'directory' && phase === 'revealing' ? 'presented.directoryOpening'
       : reveal === 'directory' && phase === 'revealError' ? 'presented.directoryError' : `presented.${phase}`)
+  const downloadLabel = downloadPhase === 'downloading' ? t('presented.downloading')
+    : downloadPhase === 'downloaded' ? t('presented.downloaded')
+      : downloadPhase === 'error' ? t('presented.downloadError')
+        : t('presented.download')
   return <div className={css.file} data-presented-file>
     <button type="button" className={css.cardPreview} title={resolveWorkspacePath(cwd, file.path)}
       aria-label={t('presented.previewCard', { name: file.path })} onClick={onPreview} />
@@ -49,7 +56,13 @@ export function PresentedFileCard({ file, cwd, phase, host, onPreview, actions, 
           <span className={css.previewHint}>{t('presented.preview')}</span>
         </span>
       </div>
-      <div className={css.actions}>{actions}</div>
+      <div className={css.actions}>
+        <Button size="sm" variant="ghost" aria-label={t('presented.downloadButton', { name })}
+          title={downloadLabel} disabled={downloadPhase === 'downloading'} onClick={onDownload}>
+          <IconDownloadOutlineRegular size={14} />
+        </Button>
+        {actions}
+      </div>
     </div>
   </div>
 }

@@ -5,6 +5,7 @@ import { Button, IconChevronDownOutlineRegular, IconChevronUpOutlineRegular } fr
 import type { GlobalStandardProps, InjectFace, PropsLocale, PropsRenderSlots, PropsRuntime, SessionStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { PresentedOpenController } from './present-open.ts'
+import type { PresentedDownloadPhase } from './download-file.ts'
 import type { ChangesDiffStore } from './changes-diff.ts'
 import type { ChangesSummaryStore } from './changes-summary.ts'
 import { ChangedFiles } from './ChangedFiles.tsx'
@@ -27,6 +28,7 @@ export interface DeliverablesInjected {
     presentedOpen: ObservableSnapshot<ReturnType<PresentedOpenController['state']['getSnapshot']>>
     presentedHost: ObservableSnapshot<ReturnType<PresentedOpenController['host']['getSnapshot']>>
     changesSummary: ObservableSnapshot<ReturnType<ChangesSummaryStore['state']['getSnapshot']>>
+    presentedDownload: ObservableSnapshot<Record<string, PresentedDownloadPhase | undefined>>
   }
   reloadPresentedHost: PresentedOpenController['loadHost']
   loadChangesDiff: ChangesDiffStore['load']
@@ -35,6 +37,8 @@ export interface DeliverablesInjected {
   openChanged: PresentedOpenController['openChanged']
   /** Open one turn's review in the right Sidebar on the file at an index. */
   openChangesReview: (coordinates: ChangesReviewCoordinates, index: number) => void
+  /** Download one delivered file to the browser through the Host's byte read. */
+  downloadPresented: (sessionId: SessionStandardProps['sessionId'], seq: number, index: number, path: string) => Promise<void>
 }
 
 /**
@@ -68,6 +72,7 @@ export function DeliverablesTail(props: PropsRuntime<'conversation.chat.turnTail
 export function Deliverables({
   matched, openFile, t, sessionId, useSessions, openPresented, openChangesReview, usePresentedOpen, usePresentedHost,
   useChangesDiff, loadChangesDiff, useChangesSummary, reloadPresentedHost, loadChangesSummary, useShowCodeDiff, renderSlot,
+  downloadPresented, usePresentedDownload,
 }: Pick<TurnTailOwnerProps, 'openFile'> & {
   matched: DeliverablesMatch
 } & PropsLocale<typeof NS> & Pick<SessionStandardProps, 'sessionId'> & Pick<GlobalStandardProps, 'useSessions'> & InjectFace<DeliverablesInjected> & PropsRenderSlots<'deliverables.file.actions'>) {
@@ -75,6 +80,7 @@ export function Deliverables({
   const showCodeDiff = useShowCodeDiff(value => value)
   const cwd = useSessions(state => state.byId[sessionId]?.cwd)
   const states = usePresentedOpen(value => value)
+  const downloads = usePresentedDownload(value => value)
   const host = usePresentedHost(value => value)
   const announced = showCodeDiff ? matched.changes : null
   const summary = useChangesSummary(value => announced === null ? undefined : value[changesSummaryUrl(sessionId, announced.seq)])
@@ -107,8 +113,10 @@ export function Deliverables({
       <div className={css.presented} data-presented-files-row data-single={matched.presented.length === 1 ? true : undefined}>
         {presented.map(file => <PresentedFileCard key={`${file.seq}:${file.index}`} file={file} cwd={cwd}
           phase={states[presentedFileUrl(sessionId, file.seq, file.index)]}
+          downloadPhase={downloads[presentedFileUrl(sessionId, file.seq, file.index)]}
           host={host === 'error' ? null : host} t={t}
           onPreview={() => { openFile(file.path) }}
+          onDownload={() => { void downloadPresented(sessionId, file.seq, file.index, file.path) }}
           actions={renderSlot('deliverables.file.actions', {
             actionUrl: presentedFileUrl(sessionId, file.seq, file.index),
             available: host !== null && host !== 'error' && host.available,

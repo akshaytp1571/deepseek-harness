@@ -22,6 +22,7 @@ import { changesReviewAddress } from '../changes.ts'
 import { ChangesDiffStore } from './changes-diff.ts'
 import { ChangesSummaryStore } from './changes-summary.ts'
 import { PresentedOpenController } from './present-open.ts'
+import { PresentedDownloadController } from './download-controller.ts'
 import { PresentRow } from './PresentRow.tsx'
 import { DeliverablesTail, type DeliverablesInjected } from './Deliverables.tsx'
 import { ReviewTab, type ReviewInjected } from './ReviewTab.tsx'
@@ -29,7 +30,7 @@ import { CHANGES_REVIEW_ID, changesReviewDefinition } from './review-definition.
 import { createReviewStore } from './review-store.ts'
 import { en, ja, es, fr, de, ru, pt, NS, zh, type DeliverablesKey } from './locales.ts'
 import {
-  deliverablesDefinition, presentedForClosing, producedFileMentions, selectProducedFiles,
+  basename, deliverablesDefinition, presentedForClosing, producedFileMentions, selectProducedFiles,
 } from './turn-deliverables.ts'
 
 export type { PresentedOpenOutcome, PresentedOpenFailure } from './present-open.ts'
@@ -42,7 +43,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 /** Required services for the tail-slot and tab-type registrations and their dictionaries. */
-export const inject = ['slots', 'locale', 'uiConversation', 'remote', 'remote.session', 'sidebarRightTabs', 'sidebarRight', 'configForms']
+export const inject = ['slots', 'locale', 'uiConversation', 'remote', 'remote.workspaceFiles', 'remote.session', 'sidebarRightTabs', 'sidebarRight', 'configForms']
 
 /**
  * Client plugin body: register the dictionaries, the turn-tail entry, and the comparison tab type.
@@ -50,11 +51,13 @@ export const inject = ['slots', 'locale', 'uiConversation', 'remote', 'remote.se
  */
 export function apply(ctx: ClientContext): void {
   const opener = new PresentedOpenController()
+  const downloader = new PresentedDownloadController()
   const summaries = new ChangesSummaryStore()
   const diffs = new ChangesDiffStore()
-  ctx.effect(() => () => Promise.all([opener.dispose(), summaries.dispose(), diffs.dispose()]))
+  ctx.effect(() => () => Promise.all([opener.dispose(), downloader.dispose(), summaries.dispose(), diffs.dispose()]))
   ctx.on('connection/reset', () => {
     opener.resetHost()
+    downloader.reset()
     summaries.reset()
     diffs.reset()
   })
@@ -69,6 +72,7 @@ export function apply(ctx: ClientContext): void {
       children: { 'deliverables.file.actions': { kind: 'list', scope: 'session' } },
       inject: (): DeliverablesInjected => ({
         hooks: { changesDiff: diffs.state, presentedOpen: opener.state, presentedHost: opener.host, changesSummary: summaries.state,
+          presentedDownload: downloader.state,
           showCodeDiff: ctx.configForms.developerTools.enabled },
         loadChangesDiff: (sessionId, seq, index) => diffs.load(sessionId, seq, index),
         reloadPresentedHost: () => opener.loadHost(),
@@ -78,6 +82,9 @@ export function apply(ctx: ClientContext): void {
         openChangesReview: (coordinates, index) => {
           ctx.sidebarRight.openResource(changesReviewAddress(coordinates), { params: { index } })
         },
+        downloadPresented: (sessionId, seq, index, path) => downloader.download(
+          ctx.remote, sessionId, seq, index, path, basename(path),
+        ),
       }),
     }, DeliverablesTail),
   )

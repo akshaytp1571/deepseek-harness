@@ -30,6 +30,7 @@ import { ChangesDiffStore } from '../src/client/changes-diff.ts'
 import { ChangesSummaryStore } from '../src/client/changes-summary.ts'
 import { changesSummaryUrl, type ChangesSummary } from '../src/changes.ts'
 import { PresentedOpenController } from '../src/client/present-open.ts'
+import type { PresentedDownloadPhase } from '../src/client/download-file.ts'
 import {
   basename, changesForClosing, deliverablesDefinition, presentedForClosing, producedFileMentions, producedForClosing,
   selectProducedFiles, type DeliverablesTurnData,
@@ -61,6 +62,9 @@ function openProps(controller = new PresentedOpenController(), summaries = new C
     openChangesReview: vi.fn<DeliverablesInjected['openChangesReview']>(),
     usePresentedOpen: <T,>(select: (state: ReturnType<typeof controller.state.getSnapshot>) => T): T =>
       select(controller.state.getSnapshot()),
+    downloadPresented: vi.fn<DeliverablesInjected['downloadPresented']>(),
+    usePresentedDownload: <T,>(select: (state: Record<string, PresentedDownloadPhase | undefined>) => T): T =>
+      select({}),
   }
 }
 
@@ -864,6 +868,8 @@ describe('plugin registration', () => {
       session,
     } as never)
     ctx.provide('remote.session', session as never)
+    // The download action reads delivered bytes through this namespace.
+    ctx.provide('remote.workspaceFiles', { readBytes: () => Promise.resolve({ ok: false as const }) } as never)
     ctx.provide('configForms', { developerTools: { enabled: createSnapshotStore(true) }, get: () => stubConfigForm().scope } as never)
     await ctx.plugin({ inject: localeInject, apply: applyLocale }).await()
 
