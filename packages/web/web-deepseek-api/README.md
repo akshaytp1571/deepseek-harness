@@ -43,6 +43,7 @@ Mount the plugin alongside `dsh-web` and select its providers. Shipped profiles 
 | `baseURL` | `https://api.deepseek.com/v1/tools` | Search and Fetch API base including its deployment path prefix; append `/search` or `/fetch` |
 | `count` | `10` | Search API results per search, an integer from 1 to 50; a smaller `maxResults` on the request wins |
 | `sendOriginalQuestion` | `true` | Send the triggering human prompt, cut to 128 characters, as the Search API's `ori_question` |
+| `timeoutMs` | `30000` | Whole-operation deadline per search/fetch: credential resolution, the request, and the response body read; a fired deadline settles as `WEB_PROVIDER_TIMEOUT` instead of hanging |
 
 Fill `baseURL` with the complete API base, including its path prefix and excluding the operation name. The default reaches `https://api.deepseek.com/v1/tools/search` and `https://api.deepseek.com/v1/tools/fetch`; a deployment with another prefix, such as `/api/v1/tools`, needs its complete base.
 
@@ -60,6 +61,8 @@ Each provider's `ready()` answers whether an operation for a model request has a
 The Search API receives `query`, `count` (the configured count, or the request's smaller `maxResults`), `need_content: false`, and, unless `sendOriginalQuestion` is off, `ori_question`: the text of the initiating Session's latest human prompt with whitespace collapsed and cut to 128 characters. A search outside a Session or without such a prompt omits it. The provider maps `results[].snippet` as the display excerpt and `results[].summary` as the model-facing excerpt, and maps nullable `date` to optional `publishedAt`; `dsh-tool-web` caps each summary. An empty results array is successful. Fetch sends `url` and returns the original Markdown as a text body with HTTP status 200, because the API answers with an error status when the target yields no usable content. Its URL is the requested URL: the API reports no final redirected URL.
 
 A blank or unparseable `baseURL` makes both providers unavailable, and a `count` outside 1 to 50 makes Search unavailable. Missing credentials fail with `WEB_PROVIDER_CREDENTIAL_MISSING`; cancellation uses `WEB_ABORTED`; transport, HTTP, and malformed response failures use `WEB_PROVIDER_ERROR`. Redirects are rejected before contacting their target. Non-success Fetch API statuses are retrieval failures, not target-page statuses. Account-authenticated HTTP 401 responses provide sign-in guidance; other dispatch failures identify the endpoint and the `baseURL` settings field. No automatic retry or provider fallback occurs.
+
+Node's `fetch` has no default timeout, so every operation runs under one configured whole-operation deadline (`timeoutMs`, default 30 seconds) spanning credential resolution, the request, and the response body read. A fired deadline aborts the in-flight request and settles as `WEB_PROVIDER_TIMEOUT` immediately: a stalled endpoint or a credential resolver that never settles cannot hang the calling tool, because the cooperative tool-call timeout policy can only abort a signal, not settle the promise the step awaits. Without the deadline the step above the tool would stay running forever — the search appears to hang, retry, and even cancellation cannot unwind it. Raise `timeoutMs` for a slow endpoint; a `timeoutMs` of `0` or less is invalid.
 
 -----
 

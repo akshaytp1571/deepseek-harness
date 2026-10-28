@@ -4607,6 +4607,8 @@ export interface Config {
   count: Volatile<number>
   /** Send the triggering user question, bounded to 128 characters, as `ori_question`. Defaults to true. */
   sendOriginalQuestion: Volatile<boolean>
+  /** Whole-operation deadline per search/fetch in milliseconds, within Node's timer range. Defaults to 30000. */
+  timeoutMs: Volatile<number>
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-web-deepseek-api -->

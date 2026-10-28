@@ -44,6 +44,8 @@ export interface Config {
   count: Volatile<number>
   /** Send the triggering user question, bounded to 128 characters, as `ori_question`. Defaults to true. */
   sendOriginalQuestion: Volatile<boolean>
+  /** Whole-operation deadline per search/fetch in milliseconds, within Node's timer range. Defaults to 30000. */
+  timeoutMs: Volatile<number>
 }
 
 export const Config = z.object({
@@ -52,6 +54,7 @@ export const Config = z.object({
   baseURL: z.string().default(DEEPSEEK_WEB_API_BASE_URL).volatile(),
   count: z.number().step(1).min(1).max(50).default(DEEPSEEK_DEFAULT_COUNT).volatile(),
   sendOriginalQuestion: z.boolean().default(true).volatile(),
+  timeoutMs: z.number().default(30_000).volatile(),
 })
 
 /**
@@ -82,11 +85,16 @@ export function apply(ctx: Context, config: Config): void {
     ...auth(),
     baseURL: config.baseURL.get(),
     count: config.count.get(),
+    resolveTimeoutMs: () => config.timeoutMs.get(),
     ...config.sendOriginalQuestion.get() ? {
       originalQuestion: () => latestUserQuestion(ctx.get('agents')?.currentInitiator()?.session),
     } : {},
   }))
-  const fetchApi = new DeepSeekFetchApiProvider(() => ({ ...auth(), baseURL: config.baseURL.get() }))
+  const fetchApi = new DeepSeekFetchApiProvider(() => ({
+    ...auth(),
+    baseURL: config.baseURL.get(),
+    resolveTimeoutMs: () => config.timeoutMs.get(),
+  }))
   ctx.web.registerSearchProvider({
     id: searchApi.id, available: () => searchApi.available(), ready, search: (request, signal) => searchApi.search(request, signal),
   })

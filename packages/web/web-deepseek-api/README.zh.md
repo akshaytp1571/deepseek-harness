@@ -43,6 +43,7 @@ kind: "package-reference"
 | `baseURL` | `https://api.deepseek.com/v1/tools` | 包含部署路径前缀的 Search 与 Fetch API 基础地址；追加 `/search` 或 `/fetch` |
 | `count` | `10` | Search API 每次搜索的结果数，为 1 至 50 的整数；请求中更小的 `maxResults` 优先 |
 | `sendOriginalQuestion` | `true` | 将触发搜索的用户提示截取至 128 个字符，作为 Search API 的 `ori_question` 发送 |
+| `timeoutMs` | `30000` | 每次搜索/抓取的整体截止时间：覆盖凭证解析、请求与响应体读取；到期以 `WEB_PROVIDER_TIMEOUT` 立即结算而不会挂起 |
 
 `baseURL` 填写完整的 API 基础地址，包含路径前缀，但不包含操作名。默认值请求 `https://api.deepseek.com/v1/tools/search` 和 `https://api.deepseek.com/v1/tools/fetch`；使用其他前缀（例如 `/api/v1/tools`）的部署需要填写其完整基础地址。
 
@@ -60,6 +61,8 @@ kind: "package-reference"
 Search API 接收 `query`、`count`（配置的结果数，或请求中更小的 `maxResults`）、`need_content: false`，以及在 `sendOriginalQuestion` 未关闭时的 `ori_question`：发起会话中最近一条用户提示的文本，空白折叠后截取至 128 个字符。在会话之外或没有此类提示的搜索不发送该字段。提供者将 `results[].snippet` 映射为展示用摘录，将 `results[].summary` 映射为面向模型的摘录，并将可为 null 的 `date` 映射为可选的 `publishedAt`；`dsh-tool-web` 限制每条摘要的长度。空结果数组表示成功。Fetch 发送 `url`，以文本正文返回原始 Markdown，并报告 HTTP 状态 200，因为目标没有可用内容时 API 会返回错误状态。返回 URL 为请求 URL：API 不报告重定向后的最终 URL。
 
 `baseURL` 为空白或无法解析时，两个提供者都不可用；`count` 不在 1 至 50 之间时，Search 不可用。凭据缺失以 `WEB_PROVIDER_CREDENTIAL_MISSING` 失败；取消使用 `WEB_ABORTED`；传输、HTTP 和响应格式错误使用 `WEB_PROVIDER_ERROR`。重定向在联系目标前即被拒绝。Fetch API 的非成功状态表示抓取失败，不代表目标页面的状态。账号鉴权的 HTTP 401 响应提供重新登录指引；其他请求失败指出端点及 `baseURL` 设置字段。不会自动重试或回退至其他提供者。
+
+Node 的 `fetch` 没有默认超时，因此每次操作都在一个整体截止时间（`timeoutMs`，默认 30 秒）下进行，覆盖凭证解析、请求与响应体读取。到期即中止进行中的请求，并立即以 `WEB_PROVIDER_TIMEOUT` 结算：端点停滞或凭证解析器永不返回都不会让调用它的工具挂起，因为协作式工具超时策略只能中止信号，无法让步骤等待的 Promise 结算。没有该截止时间时，工具之上的步骤会永远运行——搜索表现为挂起，重试无法继续，甚至取消也无法恢复。端点较慢时可调大 `timeoutMs`；`timeoutMs` 为 `0` 或更小无效。
 
 -----
 

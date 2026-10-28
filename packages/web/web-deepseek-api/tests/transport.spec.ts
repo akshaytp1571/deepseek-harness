@@ -311,3 +311,72 @@ describe('DeepSeek web cancellation and failures', () => {
   })
 
 })
+
+describe('DeepSeek web operation deadline', () => {
+  /** A fetch that honors the dispatch signal: rejects when the operation's abort fires. */
+  function stallingFetch() {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => { reject(new Error('aborted')) }, { once: true })
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('settles a stalled request as WEB_PROVIDER_TIMEOUT when the deadline elapses', async () => {
+    stallingFetch()
+    const error = await rejectedWebError(searchProvider({
+      ...options,
+      resolveTimeoutMs: () => 50,
+    }).search({ query: 'q' }))
+    expect(error).toMatchObject({
+      code: 'WEB_PROVIDER_TIMEOUT',
+      message: expect.stringContaining('timed out after 50ms'),
+    })
+  })
+
+  it('aborts the in-flight request when the deadline fires (signal reaches fetch)', async () => {
+    const fetchMock = stallingFetch()
+    await rejectedWebError(searchProvider({ ...options, resolveTimeoutMs: () => 50 }).search({ query: 'q' }))
+    // The transport dispatched fetch with the deadline-fused signal…
+    const init = (fetchMock.mock.calls[0] ?? [])[1] as RequestInit | undefined
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
+    // …and the fused signal is aborted now that the deadline won the race.
+    expect((init?.signal as AbortSignal).aborted).toBe(true)
+  })
+
+  it('keeps a stalled credential resolver from hanging: the deadline settles the operation', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})))
+    const never = new Promise<undefined>(() => {})
+    const error = await rejectedWebError(searchProvider({
+      ...options,
+      resolveAccountToken: () => never,
+      resolveTimeoutMs: () => 50,
+    }).search({ query: 'q' }))
+    expect(error.code).toBe('WEB_PROVIDER_TIMEOUT')
+  })
+
+  it('reports an invalid deadline configuration as WEB_PROVIDER_ERROR before dispatch', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({}))
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(searchProvider({ ...options, resolveTimeoutMs: () => -1 }).search({ query: 'q' }))
+      .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }))
+    await expect(searchProvider({ ...options, resolveTimeoutMs: () => Number.POSITIVE_INFINITY }).search({ query: 'q' }))
+      .rejects.toThrow(expect.objectContaining({ code: 'WEB_PROVIDER_ERROR' }))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('prefers the caller abort over the deadline when the caller wins the race', async () => {
+    stallingFetch()
+    const controller = new AbortController()
+    const search = searchProvider({ ...options, resolveTimeoutMs: () => 5_000 }).search({ query: 'q' }, controller.signal)
+    controller.abort(new Error('user stop'))
+    await expect(search).rejects.toThrow(expect.objectContaining({ code: 'WEB_ABORTED' }))
+  })
+
+  it('disarms the deadline timer when the operation completes in time', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})))
+    await expect(searchProvider({ ...options, resolveTimeoutMs: () => 60_000 }).search({ query: 'q' }))
+      .resolves.toEqual({})
+  })
+})

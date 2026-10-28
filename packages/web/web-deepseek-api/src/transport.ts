@@ -12,10 +12,17 @@ import type {} from '@deepseek-ai/dsh-agent'
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
 import type {} from '@deepseek-ai/dsh-deepseek-account'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
+import { deadline, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { WebError } from '@deepseek-ai/dsh-web'
 
 const ACCOUNT_PROVIDER = 'deepseek-account'
 const USER_AGENT = 'deepseek-harness/0.0.1'
+
+/** Node coerces larger timer delays to 1 ms, so reject them at configuration time (same bound as `dsh-web-fetch-http`). */
+const MAX_NODE_TIMER_DELAY_MS = 2_147_483_647
+
+/** Deadline code this transport stamps onto its own timeout and reports as `WEB_PROVIDER_TIMEOUT`. */
+const DEEPSEEK_WEB_TIMEOUT_CODE = 'WEB_PROVIDER_TIMEOUT'
 
 /** Authentication and endpoint values resolved once for an operation. */
 export interface DeepSeekWebAuth {
@@ -27,6 +34,12 @@ export interface DeepSeekWebAuth {
   resolveApiKey?: () => Promise<string | undefined>
   /** Credential reference named by missing-key diagnostics. */
   apiKeyEnv?: CredentialRef
+  /**
+   * Resolve the whole-operation deadline in milliseconds — credential resolution, the request,
+   * and the response body read all run under it. `undefined` arms no timer; a non-positive or
+   * non-finite value is rejected as a configuration error before dispatch.
+   */
+  resolveTimeoutMs?: () => number | undefined
 }
 
 /** User-owned endpoint settings named by dispatch failures. */
@@ -158,14 +171,66 @@ interface SearchAuth {
   readonly headers: Readonly<Record<string, string>>
 }
 
-/** Dispatch one operation using a single settings and credential snapshot.
- * @param options - Authentication sources for this operation.
+/**
+ * Dispatch one operation using a single settings and credential snapshot.
+ *
+ * Node's `fetch` has no default timeout, so without an explicit deadline a stalled endpoint — or
+ * a credential resolver that never settles — parks the calling tool forever: the cooperative
+ * tool-call timeout policy can abort its `exec.signal`, but a promise that never settles keeps
+ * the awaiting step running regardless. Every phase (credential resolution, request, response
+ * body read) runs under one deadline fused with the caller's cancellation; when the deadline
+ * fires first, the operation settles immediately as `WEB_PROVIDER_TIMEOUT` instead of hanging.
+ *
+ * @param options - Authentication sources for this operation; `resolveTimeoutMs` arms the deadline.
  * @param request - Resolved endpoint, JSON payload, and response decoder.
  * @param signal - Caller cancellation signal.
  * @returns The validated provider result.
+ * @throws {@link WebError} `WEB_PROVIDER_TIMEOUT` when the operation outlives its deadline.
  */
 export async function dispatchDeepSeekWeb<T>(
   options: DeepSeekWebAuth, request: DeepSeekWebRequest<T>, signal?: AbortSignal,
+): Promise<T> {
+  const timeoutMs = options.resolveTimeoutMs?.()
+  assertTransportTimeout(timeoutMs)
+  // `0` is the deadline library's no-timer sentinel, so an absent deadline arms no timer and the
+  // fused signal forwards only the caller's cancellation.
+  using d = deadline(signal, timeoutMs ?? 0, DEEPSEEK_WEB_TIMEOUT_CODE)
+  try {
+    return await dispatchUnderDeadline(options, request, d.signal)
+  } catch (error: unknown) {
+    const timeout = timeoutOf(d.signal, DEEPSEEK_WEB_TIMEOUT_CODE)
+    // Our own deadline won: settle as a timeout error here — the fused signal is already aborted,
+    // so the body's classification would lose the reason to the generic abort path.
+    if (timeout !== undefined) throw providerTimeoutError(timeout)
+    throw error
+  }
+}
+
+/** The stable provider timeout for a configured deadline that elapsed. */
+function providerTimeoutError(timeout: { readonly timeoutMs: number }): WebError {
+  return new WebError(
+    `DeepSeek web request timed out after ${timeout.timeoutMs}ms, the operation did not complete `
+    + '(credential resolution, request, or response body). If this endpoint is intended, guide the '
+    + 'user to raise the timeout in Built-in plugin settings > Web search; otherwise see endpoint guidance.',
+    DEEPSEEK_WEB_TIMEOUT_CODE,
+    { cause: timeout },
+  )
+}
+
+/** Reject a deadline configuration that could never arm a working timer. */
+function assertTransportTimeout(timeoutMs: number | undefined): void {
+  if (timeoutMs === undefined) return
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_NODE_TIMER_DELAY_MS) {
+    throw new WebError(
+      `DeepSeek web request timeout must be a positive finite number no greater than ${MAX_NODE_TIMER_DELAY_MS}, got ${String(timeoutMs)}`,
+      'WEB_PROVIDER_ERROR',
+    )
+  }
+}
+
+/** The bounded dispatch: the exact former body, under the deadline-fused signal. */
+async function dispatchUnderDeadline<T>(
+  options: DeepSeekWebAuth, request: DeepSeekWebRequest<T>, signal: AbortSignal,
 ): Promise<T> {
   const { endpoint, body, decode, recordRequest, guidance } = request
   const auth = await authHeaders(options, request, signal)
@@ -186,10 +251,10 @@ export async function dispatchDeepSeekWeb<T>(
         'user-agent': USER_AGENT,
       },
       body: JSON.stringify(body),
-      ...signal !== undefined ? { signal } : {},
+      signal,
     })
   } catch (error: unknown) {
-    if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
+    if (signal.aborted || isAbortError(error)) throw abortedOrTimedOut(signal, error)
     throw searchEndpointError(
       guidance,
       endpoint,
@@ -210,10 +275,10 @@ export async function dispatchDeepSeekWeb<T>(
         if (typeof detail === 'string' && detail.length > 0) message += `: ${detail}`
       }
     } catch (error: unknown) {
-      // An abort fired mid-body must surface as WEB_ABORTED, not be swallowed
-      // into a generic HTTP-error message — cancellation is not a provider
-      // error (the seam's cancellation contract).
-      if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
+      // An abort fired mid-body must surface as WEB_ABORTED (or this transport's timeout), not be
+      // swallowed into a generic HTTP-error message — cancellation and timeout are not provider
+      // errors (the seam's cancellation contract).
+      if (signal.aborted || isAbortError(error)) throw abortedOrTimedOut(signal, error)
       // Otherwise: the HTTP status is already captured in `message` above; a
       // malformed/non-JSON error body (normal for gateway 5xx/429s) can only
       // cost a richer provider message, never the real error.
@@ -229,12 +294,23 @@ export async function dispatchDeepSeekWeb<T>(
     throwIfSearchAborted(signal)
     return decode(payload)
   } catch (error: unknown) {
-    if (signal?.aborted === true || isAbortError(error)) throw searchAborted(signal, error)
+    if (signal.aborted || isAbortError(error)) throw abortedOrTimedOut(signal, error)
     const message = error instanceof WebError
       ? error.message
       : `DeepSeek returned an unprocessable response body: ${String(error)}`
     throw searchEndpointError(guidance, endpoint, message, error)
   }
+}
+
+/**
+ * Classify one failure raised under the deadline-fused signal: a win by this transport's own
+ * timer reads as the provider timeout even when the body surfaced it as a bare abort, because
+ * the body has no other way to distinguish its two abort sources.
+ */
+function abortedOrTimedOut(signal: AbortSignal, fallback: unknown): WebError {
+  const timeout = timeoutOf(signal, DEEPSEEK_WEB_TIMEOUT_CODE)
+  if (timeout !== undefined) return providerTimeoutError(timeout)
+  return searchAborted(signal, fallback)
 }
 
 /** Replace endpoint guidance with sign-in guidance when DeepSeek rejects the account token. */
