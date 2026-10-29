@@ -389,6 +389,22 @@ describe('PiAiAdapter provider routing', () => {
     expect(server.paths).toEqual(['/chat/completions'])
   })
 
+  // A gateway in front of the provider answers an oversized request with an HTML
+  // error page. That is a request-size failure, not a context overflow: labelling
+  // it CONTEXT_WINDOW_EXCEEDED sends the turn into text-only compaction, which
+  // cannot shrink the payload and fails with the same rejection.
+  it('maps a gateway body-limit 413 page to INVALID_REQUEST', async () => {
+    const server = await mockServer([{
+      status: 413,
+      body: '<html><head><title>413 Request Entity Too Large</title></head><body><center>nginx</center></body></html>',
+    }])
+    const ctx = await harness(server.url)
+    const result = await assemble(ctx, { model: 'deepseek-flash', messages: [] })
+    expect(result.finish).toMatchObject({ kind: 'error', failure: { code: 'INVALID_REQUEST' } })
+    expect(result.finish).not.toMatchObject({ failure: { code: CONTEXT_WINDOW_EXCEEDED_CODE } })
+    expect(server.paths).toEqual(['/chat/completions'])
+  })
+
   it('uses the resolved catalog context window for usage-based overflow detection', async () => {
     const model = getBuiltinModels('deepseek').find(candidate => candidate.id === 'deepseek-flash')
     if (model === undefined) throw new Error('deepseek-flash missing from pi-ai test catalog')

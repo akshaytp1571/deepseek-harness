@@ -68,6 +68,29 @@ function classifyPiAiError(message: string): string {
 }
 
 /**
+ * Whether a terminal error is a proxy body-limit rejection rather than a
+ * provider context overflow.
+ *
+ * pi-ai's overflow patterns match any leading HTTP 413, so a gateway that
+ * answers with an error page — nginx renders `413 Request Entity Too Large` as
+ * HTML — is labelled a context overflow even though nothing about the model's
+ * window was exceeded. Those failures are request-size problems: the harness's
+ * own classifier maps 413 to `INVALID_REQUEST`, and compaction cannot shrink the
+ * payload, so honouring the overflow label only burns a retry before the turn
+ * dies with the same rejection.
+ * @param errorMessage - the terminal error text.
+ * @returns whether the text is a body-limit rejection carrying a non-provider body.
+ */
+function isGatewayBodyLimitError(errorMessage: string): boolean {
+  if (isContextWindowExceededError(errorMessage)) return false
+  if (!/(?:^|[^\w])413(?:[^\w]|$)/i.test(errorMessage)) return false
+  // A provider reports a structured overflow body; a proxy reports a page or a
+  // bare status line.
+  return /<(?:\/?)(?:html|head|title|body|center|hr)\b/i.test(errorMessage)
+    || !/\{[\s\S]*\}/.test(errorMessage)
+}
+
+/**
  * Map a terminal pi-ai event to the harness finish reason.
  * @param message - the assistant message carried by the `done` or `error` event.
  * @param contextWindow - resolved catalog capacity for usage-based overflow detection.
@@ -82,7 +105,11 @@ export function mapStopReason(message: AssistantMessage, contextWindow?: number)
   const harnessOverflow = message.stopReason === 'error'
     && message.errorMessage !== undefined
     && isContextWindowExceededError(message.errorMessage)
-  if (piAiOverflow || harnessOverflow) {
+  const gatewayBodyLimit = piAiOverflow
+    && !harnessOverflow
+    && message.errorMessage !== undefined
+    && isGatewayBodyLimitError(message.errorMessage)
+  if ((piAiOverflow && !gatewayBodyLimit) || harnessOverflow) {
     return {
       kind: 'error',
       failure: {

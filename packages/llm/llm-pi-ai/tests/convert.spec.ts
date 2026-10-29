@@ -928,6 +928,28 @@ describe('mapStopReason / mapUsage', () => {
     }))).toMatchObject({ kind: 'error', failure: { code: 'INVALID_REQUEST' } })
     expect(mapStopReason(assistant({ stopReason: 'error', errorMessage: 'HTTP 413: Payload Too Large' })))
       .toMatchObject({ kind: 'error', failure: { code: 'INVALID_REQUEST' } })
+    // A gateway that answers with an error page is a request-size failure, not a
+    // context overflow: compaction cannot shrink the payload, so the overflow
+    // label only burns a retry before the turn dies with the same rejection.
+    expect(mapStopReason(assistant({
+      stopReason: 'error',
+      errorMessage: '413 <html>\r\n<head><title>413 Request Entity Too Large</title></head>\r\n<body>\r\n<center><h1>413 Request Entity Too Large</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n',
+    }))).toMatchObject({ kind: 'error', failure: { code: 'INVALID_REQUEST' } })
+    expect(mapStopReason(assistant({
+      stopReason: 'error',
+      errorMessage: '413 Request Entity Too Large',
+    }))).toMatchObject({ kind: 'error', failure: { code: 'INVALID_REQUEST' } })
+    // A provider's structured 413 body stays a context overflow.
+    expect(mapStopReason(assistant({
+      stopReason: 'error',
+      errorMessage: '413 {"error":{"type":"request_too_large","message":"Request exceeds the maximum size"}}',
+    }))).toMatchObject({ kind: 'error', failure: { code: CONTEXT_WINDOW_EXCEEDED_CODE } })
+    // pi-ai does not read this body as an overflow, so it keeps its existing
+    // classification; the guard above must not change it either way.
+    expect(mapStopReason(assistant({
+      stopReason: 'error',
+      errorMessage: 'github-copilot API error (413): {"message":"failed to parse request","code":""}',
+    }))).toMatchObject({ kind: 'error', failure: { code: 'INVALID_REQUEST' } })
     expect(mapStopReason(assistant({
       stopReason: 'error',
       errorMessage: 'Failed to buffer the request body: length limit exceeded',
