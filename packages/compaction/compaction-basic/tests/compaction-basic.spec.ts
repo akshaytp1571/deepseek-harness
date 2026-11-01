@@ -319,6 +319,7 @@ describe('compact configuration and defaults', () => {
       summarizationModel: '',
       maxTokens: 65_536,
       compactionRetries: 1,
+      overBudgetRetries: 3,
       maxOverflowRetries: 1,
       modelPolicies: [],
       auto: true,
