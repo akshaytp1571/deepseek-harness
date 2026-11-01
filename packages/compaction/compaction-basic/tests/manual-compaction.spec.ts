@@ -10,7 +10,9 @@ import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
 import {
   createAssistantMessage,
   createUserMessage,
+  CONTEXT_WINDOW_EXCEEDED_CODE,
   LlmAdapter,
+  LlmError,
 } from '@deepseek-ai/dsh-llm'
 import type {
   ContentBlock,
@@ -49,6 +51,8 @@ class GatedCompactionEngine extends BasicCompactionEngine {
   rawOutput: ContentBlock[] | undefined
   usage: TokenUsage | undefined
   error: unknown
+  /** Queue of one-shot thrown failures consumed before the scripted success. */
+  failures: unknown[] = []
   gate: Promise<undefined> | undefined
   duringSummary: (() => void) | undefined
   calls: SummarizationInput[] = []
@@ -61,6 +65,7 @@ class GatedCompactionEngine extends BasicCompactionEngine {
     this.calls.push(input)
     this.duringSummary?.()
     if (this.gate !== undefined) await this.gate
+    if (this.failures.length > 0) throw this.failures.shift()
     if (this.error !== undefined) throw this.error
     return {
       summary: this.summary,
@@ -931,5 +936,79 @@ describe('compactNow transaction and failure classification', () => {
     gate.resolve()
     compact.gate = undefined
     await expect(region).resolves.toMatchObject({ shadowedSeqs: nodes.slice(0, 2) })
+  })
+
+  it('retries an over-budget summary on the oldest balanced prefix and closes the same bracket', async () => {
+    const { compact } = detachedService()
+    // 6 surface nodes; the manual selection spans the first 5, and halving its
+    // price keeps the oldest 2-node exchange.
+    const session = closedConversation(3)
+    const agent = fakeAgent(session, () => () => undefined)
+    compact.failures = [new LlmError('413 <html><body>Request Entity Too Large</body></html>', CONTEXT_WINDOW_EXCEEDED_CODE)]
+    const before = [...session.surface.nodes]
+
+    const result = await compact.compactNow(agent, SIGNAL)
+
+    expect(result).not.toBeNull()
+    expect(result?.shadowedSeqs).toEqual(before.slice(0, 2))
+    const markers = compactEvents(session).map(event => event.type)
+    expect(markers).toEqual(['compaction/start', 'compaction/summary', 'compaction/end'])
+    const end = session.snapshotEvents().findLast(event => event.type === 'compaction/end')
+    expect(end?.data).toEqual({ compactionId: result?.compactionId, turn: null })
+    expect(compact.calls).toHaveLength(2)
+  })
+  it('retries the shrunken span with a smaller replayed prefix', async () => {
+    const { compact } = detachedService()
+    const session = closedConversation(2)
+    const agent = fakeAgent(session, () => () => undefined)
+    compact.failures = [new LlmError('pi-ai detected context overflow for model "mock"', CONTEXT_WINDOW_EXCEEDED_CODE)]
+
+    const result = await compact.compactNow(agent, SIGNAL)
+
+    expect(result).not.toBeNull()
+    expect(compact.calls).toHaveLength(2)
+    const [first, second] = compact.calls
+    expect(first!.messages.length).toBeGreaterThan(second!.messages.length)
+    expect(second!.messages).toHaveLength(1)
+    expect(second!.messages[0]?.content.some(block =>
+      block.type === 'text' && block.text.includes(`${PROMPT} 1`))).toBe(true)
+  })
+
+  it('exhausts over-budget retries inside one bracket and compacts the final slice', async () => {
+    const { compact } = detachedService()
+    // 16 surface nodes; the manual selection spans 15, halving to 7, then 3,
+    // then 1 across the three allowed retries, where the last slice succeeds.
+    const session = closedConversation(8)
+    const agent = fakeAgent(session, () => () => undefined)
+    compact.failures = [0, 1, 2].map(() =>
+      new LlmError('413 <html><body>Request Entity Too Large</body></html>', CONTEXT_WINDOW_EXCEEDED_CODE))
+    const before = [...session.surface.nodes]
+
+    const result = await compact.compactNow(agent, SIGNAL)
+
+    expect(result).not.toBeNull()
+    expect(compact.calls).toHaveLength(4)
+    // Each retry halves the previous span, so the final attempt compacts only
+    // the oldest indivisible unit rather than the whole history.
+    expect(result!.shadowedSeqs).toEqual(before.slice(0, 1))
+    expect(session.surface.nodes.length).toBe(before.length - result!.shadowedSeqs.length + 1)
+    const markers = compactEvents(session)
+    expect(markers.map(event => event.type)).toEqual(['compaction/start', 'compaction/summary', 'compaction/end'])
+    const end = session.snapshotEvents().findLast(event => event.type === 'compaction/end')
+    expect(end?.data).toEqual({ compactionId: result?.compactionId, turn: null })
+  })
+
+  it('never retries a non-over-budget summary failure', async () => {
+    const { compact } = detachedService()
+    const session = closedConversation(2)
+    const agent = fakeAgent(session, () => () => undefined)
+    compact.failures = [new LlmError('unauthorized client detected', 'AUTH')]
+    const before = [...session.surface.nodes]
+
+    const error = await rejection(compact.compactNow(agent, SIGNAL))
+
+    expect(error.code).toBe('summary')
+    expect(compact.calls).toHaveLength(1)
+    expect(session.surface.nodes).toEqual(before)
   })
 })

@@ -85,6 +85,7 @@ const summarizationProviderSchema = z.string()
 const summarizationModelSchema = z.string()
 const maxTokensSchema = z.number().step(1).min(1)
 const compactionRetriesSchema = z.number().step(1).min(0)
+const overBudgetRetriesSchema = z.number().step(1).min(0)
 const maxOverflowRetriesSchema = z.number().step(1).min(0)
 
 const modelPolicy: z<ModelCompactPolicyConfig> = z.object({
@@ -98,6 +99,7 @@ const modelPolicy: z<ModelCompactPolicyConfig> = z.object({
   summarizationModel: summarizationModelSchema,
   maxTokens: maxTokensSchema,
   compactionRetries: compactionRetriesSchema,
+  overBudgetRetries: overBudgetRetriesSchema,
   maxOverflowRetries: maxOverflowRetriesSchema,
 })
 
@@ -121,6 +123,7 @@ export class BasicCompactionEngine extends CompactionEngine {
     summarizationModel: summarizationModelSchema,
     maxTokens: maxTokensSchema,
     compactionRetries: compactionRetriesSchema,
+    overBudgetRetries: overBudgetRetriesSchema,
     maxOverflowRetries: maxOverflowRetriesSchema,
     modelPolicies: z.array(modelPolicy),
     auto: z.boolean(),
@@ -391,7 +394,7 @@ export class BasicCompactionEngine extends CompactionEngine {
       start,
       end,
       agent,
-      { owner: 'current-turn', stability: 'whole-surface' },
+      { owner: 'current-turn', stability: 'whole-surface', overBudgetRetries: this.config.overBudgetRetries },
       signal,
     )
   }
@@ -430,6 +433,7 @@ export class BasicCompactionEngine extends CompactionEngine {
             {
               owner: null,
               stability: 'selected-span',
+              overBudgetRetries: this.config.overBudgetRetries,
               ...sourceCommandId === undefined ? {} : { sourceCommandId },
               flush: async () => {
                 await this.ctx.sessions.flush(agent.session)

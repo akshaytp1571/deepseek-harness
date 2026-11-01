@@ -23,6 +23,8 @@ import { SessionSeq, type Session, type SessionEvent } from '@deepseek-ai/dsh-se
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { frameSummary } from './summarizer.ts'
 import type { SummarizationInput, SummaryResult } from './summarizer.ts'
+import { classifySummarizationFailure } from './failure-class.ts'
+
 interface RegionDependencies {
   readonly meter: TokenMeter
   summarize(input: SummarizationInput, agent: Agent, signal?: AbortSignal): Promise<SummaryResult>
@@ -61,6 +63,8 @@ interface CompactionTransactionOptions {
   readonly flush?: () => Promise<void>
   /** Manual command that initiated this transaction, when present. */
   readonly sourceCommandId?: CommandId
+  /** Over-budget summary attempts after the first, inside this one bracket. */
+  readonly overBudgetRetries: number
 }
 
 interface CompactionEntryState {
@@ -155,18 +159,31 @@ export function selectCompactableRange(
 }
 
 /**
- * Run the single compaction transaction over one selected positional span.
+ * Run one compaction transaction over a positional span, retrying the summary
+ * itself when the replayed history exceeds the summarizer route's request
+ * limit.
  * Selection and validation are read-only. Idle/log validation and
  * `compaction/start` are synchronously adjacent, so the durable opening marker is
  * the compaction lock before summarization yields. Every later failure makes
  * exactly one `compaction/end` attempt; a failed close deliberately leaves the
  * unmatched start detectable.
+ *
+ * An over-budget summary failure (a provider-confirmed context overflow or a
+ * gateway body-limit rejection of the replay) is a payload-size problem, not a
+ * route fault: the replay itself cannot fit the summarizer route's request
+ * limit. The transaction then shrinks the span to its oldest balanced prefix
+ * and retries inside the SAME bracket - one `compaction/start`, at most
+ * `options.overBudgetRetries + 1` summary attempts, exactly one closing
+ * `compaction/end` - so a session whose history outgrew the summarizer's
+ * request limit compacts in slices instead of failing every attempt. Terminal
+ * failures (auth, quota, transport, cancellation, surface change) are never
+ * retried, and a span already at one indivisible node stays terminal.
  * @param dependencies - conversation meter and dynamically dispatched summarizer hook.
  * @param session - session whose surface is mutated.
  * @param start - inclusive first surface-node seq.
  * @param end - inclusive last surface-node seq.
  * @param agent - agent used by the summarizer.
- * @param options - bracket owner, stability rule, and optional durability checkpoint.
+ * @param options - bracket owner, stability rule, over-budget retry count, and optional durability checkpoint.
  * @param signal - optional summarization cancellation signal.
  * @returns the successful durable compaction result.
  */
@@ -219,24 +236,55 @@ export async function compactSurfaceRegion(
   let stage: TransactionFailure['stage'] = 'summary'
 
   try {
-    const prepared = prepareCompaction(dependencies, session, selection)
-    const summarized = await summarizeCompaction(
-      dependencies,
-      prepared,
-      agent,
-      compactionId,
-      options.sourceCommandId,
-      assertStable,
-      signal,
-    )
-    if (options.owner === null) signal?.throwIfAborted()
-    assertStable(dependencies, session, summarized)
-    stage = 'commit'
-    const pending = commitCompactionBody(session, startEvent, summarized)
-    closing = true
-    const endEvent = session.append('compaction/end', lifecycle)
-    closed = true
-    result = completeCompaction(pending, endEvent)
+    let prepared = prepareCompaction(dependencies, session, selection)
+    const maxAttempts = options.overBudgetRetries + 1
+    for (let attempt = 1; ; attempt += 1) {
+      let summarized: SummarizedCompaction
+      try {
+        summarized = await summarizeCompaction(
+          dependencies,
+          prepared,
+          agent,
+          compactionId,
+          options.sourceCommandId,
+          assertStable,
+          signal,
+        )
+      } catch (error: unknown) {
+        if (signal?.aborted === true) throw error
+        // A recovery listener that durably shrinks the input gets its retry
+        // through the existing re-prepare loop; compaction stays inside the
+        // one bracket the durable lock already holds.
+        if (attempt >= maxAttempts || classifySummarizationFailure(error) !== 'over-budget') throw error
+        // The replay does not fit the summarizer route's request limit. Shrink
+        // to the oldest balanced prefix that fits and retry inside this same
+        // bracket; selection is read-only, so a rejection here costs nothing.
+        const next = shrinkSpanToBudget(
+          session,
+          dependencies.meter.measure(session),
+          prepared,
+          prepared.shadowedRouteTokenCount / 2,
+        )
+        if (next === null) {
+          throw new Error(
+            'compaction: one indivisible history unit exceeds the summarizer request budget '
+            + `(${prepared.shadowedRouteTokenCount} estimated route tokens); mount the tool-result pruner `
+            + 'or start a new session',
+          )
+        }
+        prepared = prepareCompaction(dependencies, session, next)
+        continue
+      }
+      if (options.owner === null) signal?.throwIfAborted()
+      assertStable(dependencies, session, summarized)
+      stage = 'commit'
+      const pending = commitCompactionBody(session, startEvent, summarized)
+      closing = true
+      const endEvent = session.append('compaction/end', lifecycle)
+      closed = true
+      result = completeCompaction(pending, endEvent)
+      break
+    }
   } catch (error: unknown) {
     failure = { error, stage: closing ? 'commit' : stage }
     if (!closing) {
@@ -273,6 +321,61 @@ export async function compactSurfaceRegion(
   /* v8 ignore next -- every path without a result records and throws a failure above. */
   if (result === undefined) throw new Error('compaction committed without a result')
   return result
+}
+
+/**
+ * Shrink one validated span to its oldest balanced prefix whose route-priced
+ * tokens fit a budget. The span keeps its start edge — the oldest history is
+ * what compaction must shadow first — and only its tail boundary walks toward
+ * the start, so every intermediate cut stays tool-pairing balanced and the
+ * retained recent nodes stay verbatim.
+ * @param session - session supplying authoritative current surface positions.
+ * @param measurement - fresh unified measurement aligned with the current surface.
+ * @param selection - the span the failed summary attempt was built from.
+ * @param budgetTokens - maximum route-priced tokens the shrunken span may carry.
+ * @returns the shrunken inclusive span, or `null` when even one indivisible node exceeds the budget.
+ */
+export function shrinkSpanToBudget(
+  session: Session,
+  measurement: TokenMeasurement,
+  selection: SurfaceSelection,
+  budgetTokens: number,
+): SurfaceSelection | null {
+  const pricedNodes = measurement.nodes
+  const surfaceNodes = session.surface.nodes
+  if (pricedNodes.length !== surfaceNodes.length
+    || surfaceNodes.some((seq, index) => seq !== pricedNodes[index]?.seq)) {
+    throw new Error('compaction: token-meter surface does not match the current session surface')
+  }
+  let endIdx = selection.endIdx
+  let spanTokens = 0
+  for (let index = selection.startIdx; index <= endIdx; index += 1) {
+    // oxlint-disable-next-line typescript/no-non-null-assertion
+    spanTokens += pricedNodes[index]!.tokens
+  }
+  while (spanTokens > budgetTokens && endIdx > selection.startIdx) {
+    // oxlint-disable-next-line typescript/no-non-null-assertion
+    spanTokens -= pricedNodes[endIdx]!.tokens
+    endIdx -= 1
+    // A new tail boundary must not split an assistant tool-call/result pair.
+    while (endIdx > selection.startIdx) {
+      // oxlint-disable-next-line typescript/no-non-null-assertion
+      if (toolPairingBalancedAfter(session, surfaceNodes[endIdx]!)) break
+      // oxlint-disable-next-line typescript/no-non-null-assertion
+      spanTokens -= pricedNodes[endIdx]!.tokens
+      endIdx -= 1
+    }
+  }
+  if (spanTokens > budgetTokens) return null
+  // oxlint-disable-next-line typescript/no-non-null-assertion
+  if (!toolPairingBalancedAfter(session, surfaceNodes[endIdx]!)) return null
+  return {
+    ...selection,
+    endIdx,
+    // oxlint-disable-next-line typescript/no-non-null-assertion
+    end: surfaceNodes[endIdx]!,
+    shadowedSeqs: surfaceNodes.slice(selection.startIdx, endIdx + 1),
+  }
 }
 
 /** Classify one closed manual attempt without weakening cancellation precedence. */

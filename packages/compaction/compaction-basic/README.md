@@ -73,6 +73,7 @@ All settings are optional. With context window `W`, effective request output cap
 | `summarizationModel` | `''` | Set together with `summarizationProvider`; an empty pair uses the latest routed request target, then the `AgentOptions` pair. |
 | `maxTokens` | `headroomTokens` (`65536`) | Positive summary output cap, including any provider-counted reasoning tokens. Explicit per-model caps override explicit global caps; otherwise the cap follows the resolved headroom. |
 | `compactionRetries` | `1` | Extra condensation attempts after the first when pressure remains above threshold. |
+| `overBudgetRetries` | `3` | Extra summary attempts after the first when the replayed history exceeds the summarizer route's request limit; each retry condenses the oldest balanced prefix of the previous span. |
 | `maxOverflowRetries` | `1` | Maximum retries after a confirmed context-window overflow; `0` disables recovery only. |
 | `modelPolicies` | `[]` | Exact `{ provider, model, ...partialPolicy }` overrides for individual model routes. |
 | `auto` | `true` | Enable automatic condensation and overflow recovery; set `false` for manual-only operation. |
@@ -82,6 +83,8 @@ Misconfiguration fails fast: unknown settings, duplicate per-model overrides, in
 ### What happens when condensation runs
 
 The oldest balanced span is replaced by one summary message and the recent tail stays verbatim; the conversation continues from the summary. The operation reports how many history items were condensed and the estimated tokens freed. If nothing can be condensed safely — for example the whole conversation is one indivisible unit — nothing changes and nothing is written to the session log. If no model is available to write the summary (no configured target and no routed request yet), condensation fails with a clear error telling you to configure the summarization provider and model or route one request.
+
+When the summarizer rejects the replayed history because it exceeds that route's own request limit — a provider-confirmed context overflow, or a gateway body-limit rejection of the multi-megabyte request — condensation retries the oldest balanced prefix that fits, up to `overBudgetRetries` times, inside the same `compaction/start` … `compaction/end` bracket. A session whose history outgrew the summarizer's window therefore condenses in slices instead of failing every attempt. Auth, quota, transport, and "summary is not smaller than the shadowed content" failures are terminal: no span size repairs them, so the attempt fails and the bracket closes with that error.
 
 ### Switching models
 
