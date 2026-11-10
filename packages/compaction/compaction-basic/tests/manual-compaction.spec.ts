@@ -1017,4 +1017,26 @@ describe('compactNow transaction and failure classification', () => {
     expect(compact.calls).toHaveLength(1)
     expect(session.surface.nodes).toEqual(before)
   })
+
+  it('fails once the span cannot shrink below one indivisible exchange', async () => {
+    const { compact } = detachedService()
+    // Two surface nodes = one indivisible exchange. Halving a 2-node span
+    // leaves nothing compactable, so shrinkSpanToBudget returns null and the
+    // retry loop surfaces the indivisible-unit error instead of re-trying.
+    const session = closedConversation(1)
+    const agent = fakeAgent(session, () => () => undefined)
+    compact.failures = [0, 1, 2].map(() =>
+      new LlmError('413 <html><body>Request Entity Too Large</body></html>', CONTEXT_WINDOW_EXCEEDED_CODE))
+    const before = [...session.surface.nodes]
+
+    const error = await rejection(compact.compactNow(agent, SIGNAL))
+
+    expect(error.code).toBe('summary')
+    expect(causeOf(error).message).toContain('one indivisible history unit')
+    expect(session.surface.nodes).toEqual(before)
+    const markers = compactEvents(session)
+    expect(markers.map(event => event.type)).toEqual(['compaction/start', 'compaction/end'])
+    const end = markers[1] as SessionEvent<'compaction/end'>
+    expect(end.data.error).toContain('one indivisible history unit')
+  })
 })
