@@ -8,7 +8,7 @@ import {
   shrinkSpanToBudget,
   selectCompactableRange,
 } from '@deepseek-ai/dsh-compaction-basic/src/region.ts'
-import { CONTEXT_WINDOW_EXCEEDED_CODE, LlmError } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, LlmError, createSystemMessage } from '@deepseek-ai/dsh-llm'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
@@ -89,9 +89,16 @@ function meterContext(): Context {
   return ctx
 }
 
-/** Six closed exchanges with no system head. */
-function exchanges(count: number): Session {
-  const session = Session.create(SessionId(`budget-${count}`))
+/** Closed exchanges, optionally with a system head at surface position 0. */
+function exchanges(count: number, system = false): Session {
+  const session = Session.create(SessionId(`budget-${count}-${system ? 'sys' : 'plain'}`))
+  if (system) {
+    session.append('system/message', {
+      turn: 1,
+      step: 0,
+      message: createSystemMessage('SYSTEM HEAD'),
+    }, { surfaceOp: 'append' })
+  }
   for (let turn = 1; turn <= count; turn += 1) {
     session.append('turn/start', { turn })
     session.append('user/message', createUserMessage({
@@ -166,5 +173,44 @@ describe('shrinkSpanToBudget', () => {
     // Only whole exchanges survive, and fewer than the full span.
     expect(half!.shadowedSeqs.length).toBeLessThan(selection.shadowedSeqs.length)
     expect(half!.shadowedSeqs.length).toBeGreaterThan(0)
+  })
+
+  it('preserves a non-zero start edge and never walks past it', () => {
+    // A system head at surface position 0 pushes the compactable range past
+    // index 0, so the shrink walk must stay inside [startIdx, endIdx] and never
+    // reach back to index 0.
+    const ctx = meterContext()
+    const session = exchanges(4, true)
+    const measurement = ctx.tokenMeter.measure(session)
+    const nodes = session.surface.nodes
+    const range = selectCompactableRange(session, measurement, 0)
+    expect(range).not.toBeNull()
+    const startIdx = nodes.indexOf(range!.start)
+    const endIdx = nodes.indexOf(range!.end)
+    // The system head is node 0 and selectCompactableRange skips it.
+    expect(startIdx).toBe(1)
+
+    const selection = {
+      start: range!.start,
+      end: range!.end,
+      startIdx,
+      endIdx,
+      shadowedSeqs: nodes.slice(startIdx, endIdx + 1),
+    }
+    const priced = measurement.nodes
+    const full = priced.slice(startIdx, endIdx + 1)
+      .reduce((total, node) => total + node.tokens, 0)
+    expect(full).toBeGreaterThan(0)
+
+    const half = shrinkSpanToBudget(session, measurement, selection, full / 2)
+    expect(half).not.toBeNull()
+    // The start edge is never moved — the shrink only walks the tail inward.
+    expect(half!.startIdx).toBe(startIdx)
+    expect(half!.start).toBe(range!.start)
+    expect(half!.endIdx).toBeLessThan(endIdx)
+    expect(half!.endIdx).toBeGreaterThanOrEqual(startIdx)
+    // The shadowed nodes start at the ORIGINAL startIdx, not surface 0.
+    expect(half!.shadowedSeqs[0]).toBe(range!.start)
+    expect(half!.shadowedSeqs).not.toContain(nodes[0]!)
   })
 })
